@@ -125,6 +125,8 @@ def add_heuristic_batch_size_arg(
         default=int(default),
         help=help_text,
     )
+    parser.set_defaults(history_direction="both", history_protocol="both_endpoints_recent_v1",
+                        interaction_count_direction="source_to_target")
     return parser
 
 
@@ -906,6 +908,8 @@ def build_semantic_mlp_arg_parser(str2bool):
     parser.add_argument("--embedding_cache", type=str, default=None)
     parser.add_argument("--smoothed_embedding_cache", type=str, default=None)
     parser.add_argument("--checkpoint_path", type=str, default="best_semantic_mlp.pt")
+    parser.set_defaults(history_direction="both", history_protocol="both_endpoints_recent_v1",
+                        interaction_count_direction="source_to_target")
     return parser
 
 
@@ -1170,7 +1174,7 @@ def build_arg_parser():
     parser.add_argument(
         "--history_window",
         type=int,
-        default=100,
+        default=47,
         help="Number of historical events to include in prompt",
     )
     parser.add_argument(
@@ -2293,6 +2297,8 @@ def build_arg_parser():
         action="store_true",
         help="Restore the original split loop: build/evaluate each split before moving to the next one",
     )
+    parser.set_defaults(history_direction="both", history_protocol="both_endpoints_recent_v1",
+                        interaction_count_direction="source_to_target")
     return parser
 
 

@@ -392,17 +392,18 @@ def _assign_contextual_key_signal_calibration(
                     other_id = int(evt[0])
                     if other_id == source_id:
                         continue
-                    counterpart_counts[other_id] += 1
                     evt_ts = int(evt[3])
                     prev_last = counterpart_last_ts.get(other_id)
                     if prev_last is None or evt_ts > prev_last:
                         counterpart_last_ts[other_id] = evt_ts
 
                 query_targets = [int(samples[sample_idx]["target_id"]) for sample_idx in indices]
-                reference_targets = list(counterpart_counts.keys())
+                # Keep bidirectional recency/RA references, but calibrate counts
+                # against outgoing counterparts only, matching the directed raw count.
+                reference_targets = list(counterpart_last_ts.keys())
                 interaction_reference = sorted(
                     float(counterpart_counts.get(target_id, 0.0))
-                    for target_id in reference_targets
+                    for target_id in counterpart_counts
                 )
                 recency_reference = sorted(
                     float(timestamp - counterpart_last_ts[target_id])
@@ -628,7 +629,7 @@ def calibrate_prompt_key_signals(
             return samples
 
         print("Pre-computing contextual calibration histories...")
-        edges_df_sorted = edges_df.sort_values("ts")
+        edges_df_sorted = edges_df.sort_values("ts", kind="stable")
         edge_u_vals = edges_df_sorted["u"].values
         edge_i_vals = edges_df_sorted["i"].values
         edge_ts_vals = edges_df_sorted["ts"].values
@@ -705,7 +706,7 @@ def materialize_samples_prompt_context(
     *,
     edges_df,
     entity_map,
-    history_window=10,
+    history_window=47,
     semantic_history=False,
     semantic_topk=None,
     semantic_history_entity_mode=False,
@@ -858,7 +859,7 @@ def materialize_samples_prompt_context(
         else:
             print("Prompt-context enrichment uses original raw-embedding cosine (no smoothing).")
 
-    edges_df_sorted = edges_df.sort_values("ts")
+    edges_df_sorted = edges_df.sort_values("ts", kind="stable")
     u_vals = edges_df_sorted["u"].values
     r_vals = edges_df_sorted["r"].values
     i_vals = edges_df_sorted["i"].values
@@ -867,6 +868,7 @@ def materialize_samples_prompt_context(
 
     history_as_source = defaultdict(list)
     history_as_target = defaultdict(list)
+    history_as_endpoint = defaultdict(list)
     pair_history = defaultdict(list)
     indexing_start = time.perf_counter()
     for u, r, i, ts in tqdm(
@@ -881,6 +883,8 @@ def materialize_samples_prompt_context(
         event = (u, r, i, ts)
         history_as_source[u].append(event)
         history_as_target[i].append(event)
+        history_as_endpoint[u].append(event)
+        history_as_endpoint[i].append(event)
         pair_history[(u, i)].append(event)
     stage_profile["indexing_sec"] = time.perf_counter() - indexing_start
 
@@ -1158,37 +1162,7 @@ def materialize_samples_prompt_context(
         return [node_id for node_id, _ in rows[:top_k]]
 
     def build_source_history(source_id, target_id, timestamp, semantic_embs=None):
-        if semantic_history:
-            pool = get_history_pool(
-                history_as_source[source_id],
-                timestamp,
-                pool_size=history_pool_size,
-                pool_window=history_pool_window,
-            )
-            if semantic_history_entity_mode:
-                entity_ts_map = defaultdict(list)
-                for evt in pool:
-                    entity_ts_map[int(evt[2])].append(int(evt[3]))
-                grouped = select_topk_entity_series(
-                    entity_ts_map=entity_ts_map,
-                    ref_id=target_id,
-                    top_k=semantic_topk,
-                    semantic_embs=semantic_embs,
-                )
-                return [], grouped
-            return (
-                select_topk_semantic(
-                    pool,
-                    target_id,
-                    lambda event: event[2],
-                    semantic_topk,
-                    semantic_embs,
-                    query_ts=timestamp,
-                    apply_hub_penalty=True,
-                ),
-                [],
-            )
-        return get_recent_history(history_as_source[source_id], timestamp, limit=history_window), []
+        return build_target_history(target_id, source_id, timestamp, semantic_embs)
 
     def build_target_history(source_id, target_id, timestamp, semantic_embs=None):
         if semantic_history:
@@ -1234,20 +1208,9 @@ def materialize_samples_prompt_context(
                 [],
             )
 
-        target_hist_as_source = get_recent_history(
-            history_as_source[target_id],
-            timestamp,
-            limit=history_window,
-        )
-        target_hist_as_target = get_recent_history(
-            history_as_target[target_id],
-            timestamp,
-            limit=history_window,
-        )
-        target_history_list = sorted(target_hist_as_source + target_hist_as_target, key=lambda x: x[3])
-        if len(target_history_list) > history_window:
-            target_history_list = target_history_list[-history_window:]
-        return target_history_list, []
+        return get_recent_history(
+            history_as_endpoint[target_id], timestamp, limit=history_window
+        ), []
 
     def build_common_neighbors_info(
         common_nodes,
@@ -1320,7 +1283,8 @@ def materialize_samples_prompt_context(
             mutual_all = sorted(forward[:idx_forward] + reverse[:idx_reverse], key=lambda x: x[3])
             mutual_history = mutual_all[-history_window:]
 
-        return mutual_history, int(idx_forward + idx_reverse), last_ts
+        # Mutual history/recency include both directions; the count is source -> target.
+        return mutual_history, int(idx_forward), last_ts
 
     # Reuse source/target-side lookup work across samples sharing the same
     # endpoint and timestamp (common in DTGB positive+negative query bundles).
@@ -1351,7 +1315,7 @@ def materialize_samples_prompt_context(
         source_history_static = None
         if populate_prompt_lists and (not semantic_history):
             source_history_static = get_recent_history(
-                history_as_source[source_id],
+                history_as_endpoint[source_id],
                 timestamp,
                 limit=history_window,
             )
@@ -1388,20 +1352,9 @@ def materialize_samples_prompt_context(
 
         target_history_static = None
         if populate_prompt_lists and (not semantic_history):
-            target_hist_as_source = get_recent_history(
-                history_as_source[target_id],
-                timestamp,
-                limit=history_window,
+            target_history_static = get_recent_history(
+                history_as_endpoint[target_id], timestamp, limit=history_window
             )
-            target_hist_as_target = get_recent_history(
-                history_as_target[target_id],
-                timestamp,
-                limit=history_window,
-            )
-            target_history_list = sorted(target_hist_as_source + target_hist_as_target, key=lambda x: x[3])
-            if len(target_history_list) > history_window:
-                target_history_list = target_history_list[-history_window:]
-            target_history_static = target_history_list
 
         payload = {
             "idx_t_source": int(idx_t_source),

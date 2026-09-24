@@ -23,6 +23,10 @@ See the [repository README](../README.md) for the main-table reproduction
 commands, data setup, and supported environments. Optional prompt-vector
 capture is described in [LLM_PROMPT_EMBEDDINGS.md](llm_lp/LLM_PROMPT_EMBEDDINGS.md).
 
+The [LLM history protocol](../docs/llm-history-protocol.md) defines both-endpoint
+incoming/outgoing histories, the default 47-event window, and directed
+source-to-target interaction counts.
+
 Local LLM evaluation and prompt export require an explicit `--model_path`;
 pass your checkpoint directory or Hugging Face model identifier. PEFT training
 also requires `--model_path` and defaults to `--train_data_protocol dtgb_strict`:

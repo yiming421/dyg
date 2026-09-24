@@ -277,7 +277,7 @@ def create_test_samples(
     num_samples=100,
     negative_ratio=1,
     random_seed=42,
-    history_window=10,
+    history_window=47,
     semantic_history=False,
     semantic_topk=None,
     semantic_history_entity_mode=False,
@@ -900,7 +900,7 @@ def create_test_samples(
     else:
         print("Skipping entity-history pre-computation (prompt-context disabled).")
 
-    edges_df_sorted = edges_df.sort_values("ts")
+    edges_df_sorted = edges_df.sort_values("ts", kind="stable")
     u_vals = edges_df_sorted["u"].values
     r_vals = edges_df_sorted["r"].values
     i_vals = edges_df_sorted["i"].values
@@ -912,6 +912,7 @@ def create_test_samples(
 
     history_as_source = defaultdict(list)
     history_as_target = defaultdict(list)
+    history_as_endpoint = defaultdict(list)
     pair_history_as_source = defaultdict(lambda: defaultdict(list))
     if need_event_histories:
         for u, r, i, ts in tqdm(zip(u_vals, r_vals, i_vals, ts_vals), total=len(u_vals), desc="Indexing"):
@@ -919,6 +920,9 @@ def create_test_samples(
             event = (u, r, i, ts)
             history_as_source[u].append(event)
             history_as_target[i].append(event)
+            # Preserve original direction and duplicate events, including graph-style self-loop entries.
+            history_as_endpoint[u].append(event)
+            history_as_endpoint[i].append(event)
             pair_history_as_source[u][i].append(event)
 
     mapped_u_vals = None
@@ -1258,37 +1262,8 @@ def create_test_samples(
         return [node_id for node_id, _ in rows[:top_k]]
 
     def build_source_history(source_id, target_id, timestamp, semantic_embs=None):
-        if semantic_history:
-            pool = get_history_pool(
-                history_as_source[source_id],
-                timestamp,
-                pool_size=history_pool_size,
-                pool_window=history_pool_window,
-            )
-            if semantic_history_entity_mode:
-                entity_ts_map = defaultdict(list)
-                for evt in pool:
-                    entity_ts_map[int(evt[2])].append(int(evt[3]))
-                grouped = select_topk_entity_series(
-                    entity_ts_map=entity_ts_map,
-                    ref_id=target_id,
-                    top_k=semantic_topk,
-                    semantic_embs=semantic_embs,
-                )
-                return [], grouped
-            return (
-                select_topk_semantic(
-                    pool,
-                    target_id,
-                    None,
-                    semantic_topk,
-                    semantic_embs,
-                    query_ts=timestamp,
-                    apply_hub_penalty=True,
-                ),
-                [],
-            )
-        return get_recent_history(history_as_source[source_id], timestamp, limit=history_window), []
+        # Reuse exactly the same endpoint retrieval rule for both query roles.
+        return build_target_history(target_id, source_id, timestamp, semantic_embs)
 
     def build_target_history(source_id, target_id, timestamp, semantic_embs=None):
         if semantic_history:
@@ -1337,20 +1312,9 @@ def create_test_samples(
                 [],
             )
 
-        target_hist_as_source = get_recent_history(
-            history_as_source[target_id],
-            timestamp,
-            limit=history_window,
-        )
-        target_hist_as_target = get_recent_history(
-            history_as_target[target_id],
-            timestamp,
-            limit=history_window,
-        )
-        target_history_list = sorted(target_hist_as_source + target_hist_as_target, key=lambda x: x[3])
-        if len(target_history_list) > history_window:
-            target_history_list = target_history_list[-history_window:]
-        return target_history_list, []
+        return get_recent_history(
+            history_as_endpoint[target_id], timestamp, limit=history_window
+        ), []
 
     def build_common_neighbors_info(
         common_nodes,
@@ -1524,7 +1488,8 @@ def create_test_samples(
             t_to_s_all = get_outgoing_pair_history(target_id, source_id)
             mutual_all = merge_sorted_events_by_ts(s_to_t_all, t_to_s_all)
             mutual_history_list = get_recent_history(mutual_all, timestamp, limit=history_window)
-            num_past_interactions = bisect_left(mutual_all, timestamp, key=lambda x: x[3])
+            # Directed count is independent of the bidirectional mutual-history list.
+            num_past_interactions = bisect_left(s_to_t_all, timestamp, key=lambda x: x[3])
 
             if mutual_history_list:
                 last_ts = mutual_history_list[-1][3]
@@ -1645,7 +1610,7 @@ def create_test_samples(
                     timestamp,
                     limit=history_window,
                 )
-                neg_num_past_interactions = bisect_left(neg_mutual_all, timestamp, key=lambda x: x[3])
+                neg_num_past_interactions = bisect_left(neg_s_to_t_all, timestamp, key=lambda x: x[3])
 
                 if neg_mutual_history_list:
                     last_ts = neg_mutual_history_list[-1][3]

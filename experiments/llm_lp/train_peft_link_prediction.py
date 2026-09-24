@@ -156,7 +156,7 @@ def build_arg_parser():
         "--data_seed", type=int, default=2020,
         help="DTGB reserved-node split seed; independent of the SFT sampling seed.",
     )
-    parser.add_argument("--history_window", type=int, default=100, help="Prompt history window.")
+    parser.add_argument("--history_window", type=int, default=47, help="Prompt history window.")
     parser.add_argument("--max_length", type=int, default=8192, help="Training sequence length cap.")
     add_seed_arguments(parser)
     parser.add_argument(
@@ -619,6 +619,8 @@ def build_arg_parser():
         "--prepare_samples_only", action="store_true",
         help="Write sampled training identities and protocol audit, then exit before prompts/model loading.",
     )
+    parser.set_defaults(history_direction="both", history_protocol="both_endpoints_recent_v1",
+                        interaction_count_direction="source_to_target")
     return parser
 
 
@@ -656,6 +658,7 @@ def _validate_training_protocol_args(args):
             "train_data_protocol", "train_split_name", "data_seed", "dataset_name",
             "val_ratio", "test_ratio", "apply_gdelt_time_bucket", "seed",
             "train_num_samples", "negative_ratio", "edge_sampling_strategy", "model_path",
+            "history_window", "history_protocol", "interaction_count_direction",
         )
         if any(previous.get(field) != getattr(args, field) for field in fields):
             raise ValueError("Strict resume data/base provenance differs; do not resume a legacy adapter.")

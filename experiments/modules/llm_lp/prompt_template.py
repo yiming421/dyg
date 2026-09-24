@@ -852,7 +852,7 @@ def create_prompt(
     target_popularity=0,
     avg_node_popularity=0.0,
     common_neighbors=None,
-    history_window=10,
+    history_window=47,
     include_key_signals=True,
     key_signal_fields=None,
     use_raw_key_signals=False,
@@ -913,7 +913,7 @@ def create_prompt(
         relation_id: Relation ID (int)
         target_id: Target entity ID (int)
         prediction_time: Timestamp to predict (int)
-        source_history: List of past events initiated BY source entity [(u, r, i, ts), ...]
+        source_history: List of past incoming and outgoing events involving source entity [(u, r, i, ts), ...]
         target_history: List of past events involving target entity [(u, r, i, ts), ...]
         source_history_entities: Optional entity-centric source history [(entity_id, [ts, ...]), ...]
         target_history_entities: Optional entity-centric target history [(entity_id, [ts, ...]), ...]
@@ -1347,9 +1347,9 @@ def create_prompt(
                 )
         if not ablate_source_history:
             source_history_heading = (
-                "Recent interactions initiated by the source entity:"
+                "Recent interactions involving the source entity (incoming and outgoing):"
                 if (natural_grouped_history or natural_activity_summary or natural_neighbor_names_only or natural_activity_compact_top3) and not source_history_entities
-                else f"The {source_history_desc} actions initiated BY {source_entity} "
+                else f"The {source_history_desc} actions received BY {source_entity} or performed BY them "
                      f"(up to {history_window} events):"
             )
             history_sections.append(
@@ -1444,7 +1444,7 @@ def create_prompt(
             )
             key_line_map = {
                 "target_popularity": f"Target popularity (raw dynamic degree): {target_popularity}",
-                "past_interactions": f"Past interactions (raw count): {num_past_interactions}",
+                "past_interactions": f"Past source-to-target interactions (raw count): {num_past_interactions}",
                 "recency": f"Interaction recency (raw delta in ts units): {recency_value}",
                 "common_neighbor": f"Common neighbor (raw RA score): {common_neighbor_level}",
                 "recent_degree": (
@@ -1465,7 +1465,7 @@ def create_prompt(
             ]
             key_line_map = {
                 "target_popularity": f"Target popularity percentile: {_fmt_pct(target_popularity)}",
-                "past_interactions": f"Past interactions percentile: {_fmt_pct(num_past_interactions)}",
+                "past_interactions": f"Past source-to-target interactions percentile: {_fmt_pct(num_past_interactions)}",
                 "recency": f"Interaction recency percentile: {_fmt_pct(last_interaction_str)}",
                 "common_neighbor": f"Common neighbor percentile: {_fmt_pct(common_neighbor_level)}",
                 "recent_degree": f"Recent degree percentile: {_fmt_pct(recent_degree_signal)}",
@@ -1476,7 +1476,7 @@ def create_prompt(
         else:
             key_line_map = {
                 "target_popularity": f"Target popularity level: {target_popularity}",
-                "past_interactions": f"Past interactions level: {num_past_interactions}",
+                "past_interactions": f"Past source-to-target interactions level: {num_past_interactions}",
                 "recency": f"Interaction recency level: {last_interaction_str}",
                 "common_neighbor": f"Common neighbor level: {common_neighbor_level}",
                 "recent_degree": f"Recent degree level: {recent_degree_signal}",
@@ -1872,7 +1872,7 @@ if __name__ == "__main__":
         common_neighbors=common_neighbors,
         entity_map=entity_map,
         relation_map=relation_map,
-        history_window=10,
+        history_window=47,
         use_chat_template=False
     )
 
