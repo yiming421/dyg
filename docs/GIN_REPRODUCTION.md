@@ -78,3 +78,15 @@ python scripts/reproduce_gin.py summarize --output-root outputs/gin
 The command reports per-run AUC, the arithmetic mean, and **sample** standard deviation (`ddof=1`). Aggregation verifies the configured runs and checks that their sources, inputs, configurations, and evaluation populations match. Add `--allow-input-mismatch` only when intentionally summarizing an input variant; incompatible variants cannot be mixed.
 
 Each run directory contains the chosen `best.pt`, `effective_config.json`, a manifest with source/input hashes and environment versions, `metrics.jsonl`, canonical negative tables, `timing.json`, and `result.json`. The adapter in `experiments/gin/protocol.py` applies the evaluation rules to the frozen model code. Source and input verification runs locally before training.
+
+Heuristic preprocessing uses version `elapsed-log-train-minmax-v1`: recency is
+`-log1p(t - last_time)`, and feature min/max bounds are fitted once on observed
+training positives plus one fixed training-pool negative per positive. The
+independent fitting RNG uses seed 42 and does not alter training sampling.
+Validation and test use the saved bounds, clipping to `[0, 1]`; they never fit
+or update them. Checkpoints include `heuristic_preprocessing` with the version,
+feature order and bounds. Older heuristic checkpoints lack this state and are
+rejected: use their original source version to reproduce historical predictions,
+or retrain with the corrected preprocessing. Historical results do not describe
+the corrected version. The negative-log transform is retained; this change does
+not introduce exponential decay.

@@ -14,6 +14,7 @@ from typing import Tuple
 import numba
 import numpy as np
 import torch
+from utils.heuristic_scaling import FixedHeuristicScaling
 
 
 HEURISTIC_FEATURE_NAMES = ("recency", "popularity", "past", "ra")
@@ -146,21 +147,7 @@ def _time_sorted_csr(neighbor_sampler) -> Tuple[np.ndarray, np.ndarray, np.ndarr
     return cached
 
 
-def normalize_heuristic_features(features: np.ndarray) -> np.ndarray:
-    """Apply the batch-paired min-max convention used by the semantic models."""
-    values = np.asarray(features, dtype=np.float32)
-    if len(values) == 0:
-        return values.copy()
-    minimum = values.min(axis=0, keepdims=True)
-    maximum = values.max(axis=0, keepdims=True)
-    denominator = maximum - minimum
-    denominator[denominator < 1e-12] = 1.0
-    return np.clip((values - minimum) / denominator, 0.0, 1.0).astype(
-        np.float32
-    )
-
-
-class RecentInteractionHeuristicExtractor:
+class RecentInteractionHeuristicExtractor(FixedHeuristicScaling):
     """Four structural features restricted to each node's latest-K history."""
 
     feature_names = HEURISTIC_FEATURE_NAMES
@@ -171,10 +158,6 @@ class RecentInteractionHeuristicExtractor:
         self.neighbor_sampler = neighbor_sampler
         self.recent_cap = int(recent_cap)
         self.indptr, self.indices, self.times = _time_sorted_csr(neighbor_sampler)
-
-    @staticmethod
-    def normalize_raw_features(features: np.ndarray) -> np.ndarray:
-        return normalize_heuristic_features(features)
 
     def get_raw_features(
         self,
@@ -244,7 +227,7 @@ def prepare_pos_neg_heuristic_tensors(
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute and jointly normalize positive/negative heuristic rows."""
+    """Transform positive/negative rows using fixed training normalization."""
     pos_raw = extractor.get_raw_features(
         sources=pos_sources, targets=pos_targets, prediction_times=pos_times
     )
@@ -263,6 +246,5 @@ __all__ = [
     "HEURISTIC_FEATURE_NAMES",
     "RecentInteractionHeuristicExtractor",
     "build_dygformer_heuristic_extractor",
-    "normalize_heuristic_features",
     "prepare_pos_neg_heuristic_tensors",
 ]

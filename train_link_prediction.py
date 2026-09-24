@@ -23,6 +23,7 @@ from evaluate_models_utils import evaluate_model_link_prediction, evaluate_model
 from utils.metrics import get_link_prediction_metrics
 from utils.DataLoader import get_idx_data_loader, get_link_prediction_data
 from utils.EarlyStopping import EarlyStopping
+from utils.heuristic_scaling import fit_training_heuristic_normalization
 from utils.load_configs import get_link_prediction_args
 from utils.dygformer_heuristics import (
     HEURISTIC_FEATURE_NAMES,
@@ -109,6 +110,13 @@ if __name__ == "__main__":
                 neighbor_sampler=full_neighbor_sampler,
                 scope=args.dygformer_heuristic_scope,
                 recent_cap=recent_cap,
+            )
+            fit_training_heuristic_normalization(
+                train_heuristic_extractor, train_data.src_node_ids,
+                train_data.dst_node_ids, train_data.node_interact_times,
+            )
+            full_heuristic_extractor.load_normalization_state_dict(
+                train_heuristic_extractor.normalization_state_dict()
             )
 
         # set up logger
@@ -204,7 +212,8 @@ if __name__ == "__main__":
         os.makedirs(save_model_folder, exist_ok=True)
 
         early_stopping = EarlyStopping(patience=args.patience, save_model_folder=save_model_folder,
-                                       save_model_name=args.save_model_name, logger=logger, model_name=args.model_name)
+                                       save_model_name=args.save_model_name, logger=logger, model_name=args.model_name,
+                                       heuristic_extractor=full_heuristic_extractor)
 
         loss_func = nn.BCELoss()
 

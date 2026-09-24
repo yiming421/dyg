@@ -610,6 +610,7 @@ class SemanticMLPHybridBackbone:
                 node_city_ids=node_city_ids,
                 node_zip_ids=node_zip_ids,
             )
+            heuristic_extractor.load_normalization_state_dict(ckpt.get("heuristic_preprocessing"))
             print(
                 "Semantic heuristic fusion config: "
                 f"features={','.join(heuristic_extractor.feature_names)}, "

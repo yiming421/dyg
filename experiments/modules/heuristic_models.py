@@ -484,7 +484,8 @@ def score_links_by_recency(neighbor_sampler,
             required when directed=True; used to build a directed CSR once and cache it.
 
     Returns:
-        scores: [batch_size] most recent interaction timestamps (-1 if never)
+        scores: [batch_size] last interaction time minus prediction time;
+            -1e15 for pairs with no interaction strictly before prediction time.
     """
     # Build CSR format (cached after first call)
     if not directed:

@@ -38,6 +38,7 @@ from experiments.modules.llm_lp.cli import (
 )
 from experiments.modules.llm_lp.experiment import build_prompt_entity_map
 from utils.seed_runs import launch_seed_workers
+from utils.heuristic_scaling import fit_training_heuristic_normalization
 from utils.DataLoader import get_link_prediction_data, get_idx_data_loader
 from utils.utils import NegativeEdgeSampler, get_neighbor_sampler, set_random_seed
 
@@ -1001,6 +1002,10 @@ def main():
             prediction_times=train_data.node_interact_times,
             desc="Heuristics: train positives",
         )
+        fit_training_heuristic_normalization(
+            heuristic_extractor, train_data.src_node_ids, train_data.dst_node_ids,
+            train_data.node_interact_times, positive_features=train_pos_raw_heuristic_features,
+        )
         val_pos_raw_heuristic_features = heuristic_extractor.precompute_raw_features(
             sources=val_data.src_node_ids,
             targets=val_data.dst_node_ids,
@@ -1393,6 +1398,9 @@ def main():
             os.makedirs(checkpoint_dir, exist_ok=True)
         ridge_checkpoint = {
             'state_dict': model.state_dict(),
+            'heuristic_preprocessing': (
+                heuristic_extractor.normalization_state_dict() if heuristic_extractor is not None else None
+            ),
             'ridge_projection_state_dict': (
                 ridge_projection.state_dict() if ridge_projection is not None else None
             ),
@@ -2034,6 +2042,9 @@ def main():
             epochs_no_improve = 0
             ckpt = {
                 'state_dict': model.state_dict(),
+                'heuristic_preprocessing': (
+                    heuristic_extractor.normalization_state_dict() if heuristic_extractor is not None else None
+                ),
                 'entity_embedding_state_dict': (
                     entity_embedding_table.state_dict() if entity_embedding_table is not None else None
                 ),
@@ -2276,6 +2287,8 @@ def main():
         raise RuntimeError("No checkpoint saved. Training may have produced zero valid batches.")
 
     ckpt = torch.load(args.checkpoint_path, map_location=device)
+    if heuristic_extractor is not None:
+        heuristic_extractor.load_normalization_state_dict(ckpt.get('heuristic_preprocessing'))
     model.load_state_dict(ckpt['state_dict'])
     if entity_embedding_table is not None:
         if ckpt.get('entity_embedding_state_dict') is None:

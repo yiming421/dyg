@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+from utils.heuristic_scaling import FixedHeuristicScaling
 
 from experiments.modules.heuristic_models import (
     HAS_CUDA,
@@ -89,7 +90,7 @@ def build_googlemap_city_zip_ids(entity_text_df, max_node_id: int):
 
     return city_ids, zip_ids, city_to_id, zip_to_id
 
-class HeuristicFeatureExtractor:
+class HeuristicFeatureExtractor(FixedHeuristicScaling):
     """
     CRAFT-style edge heuristics with configurable feature subset.
     """
@@ -188,21 +189,6 @@ class HeuristicFeatureExtractor:
         return tuple(name for name in SUPPORTED_HEURISTIC_FEATURE_NAMES if name in set(normalized))
 
     @staticmethod
-    def _minmax_norm(features: np.ndarray) -> np.ndarray:
-        mins = np.min(features, axis=0, keepdims=True)
-        maxs = np.max(features, axis=0, keepdims=True)
-        denom = maxs - mins
-        denom[denom < 1e-12] = 1.0
-        out = (features - mins) / denom
-        return np.clip(out, 0.0, 1.0)
-
-    @staticmethod
-    def normalize_raw_features(features: np.ndarray) -> np.ndarray:
-        return HeuristicFeatureExtractor._minmax_norm(
-            np.asarray(features, dtype=np.float32)
-        ).astype(np.float32)
-
-    @staticmethod
     def _cache_key(source: int, target: int, prediction_time: float) -> Tuple[int, int, float]:
         return int(source), int(target), float(prediction_time)
 
@@ -225,7 +211,8 @@ class HeuristicFeatureExtractor:
         if "recency" in self.feature_names:
             assert raw_recency is not None
             unseen = raw_recency <= -1e14
-            delta_t = prediction_times - raw_recency
+            # The scoring kernel returns last_time - prediction_time.
+            delta_t = -raw_recency
             delta_t[unseen] = 1e9
             feature_columns.append(-np.log1p(np.clip(delta_t, a_min=0.0, a_max=None)))
         if "popularity" in self.feature_names:
@@ -331,15 +318,6 @@ class HeuristicFeatureExtractor:
                         directed_dst_node_ids=self.directed_dst_node_ids,
                         directed_node_interact_times=self.directed_node_interact_times,
                     )
-                    if self.recency_directed:
-                        # The legacy kernel returns last_time - prediction_time even
-                        # though its public contract says absolute last_time.  Preserve
-                        # the old undirected checkpoint path byte-for-byte, but convert
-                        # the new directed intervention back to an absolute timestamp so
-                        # _build_raw_feature_matrix computes the intended positive gap.
-                        seen = raw_recency > -1e14
-                        raw_recency = raw_recency.copy()
-                        raw_recency[seen] += prediction_times[sl][seen]
             if profile_out is not None:
                 profile_out['recency_s'] = profile_out.get('recency_s', 0.0) + (time.perf_counter() - t_start)
             recency_elapsed = (time.perf_counter() - t_start) if show_progress else None
