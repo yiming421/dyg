@@ -2,7 +2,7 @@
 
 The public entry point is `scripts/reproduce_gin.py`. It runs the audited rolling-snapshot GIN with E5-large-v2 entity embeddings and four heuristics (`recency,popularity,past,ra`), with MPLP disabled. It needs no W&B account or machine-specific directory layout.
 
-The default reproduction protocol uses five distinct training seeds: `42, 43, 44, 45, 46`. Run the commands below to generate per-seed results and their mean and sample standard deviation. Dataset configurations and input fingerprints are included in the repository; generated results, logs, and checkpoints remain local.
+The default reproduction protocol uses five independent training runs. Run the commands below to generate results and their mean and sample standard deviation. Dataset configurations and input fingerprints are included in the repository; generated results, logs, and checkpoints remain local.
 
 ## Install and prepare data
 
@@ -18,7 +18,7 @@ Download the DTGB datasets using the link in the [repository README](../README.m
   Googlemap_CT/{edge_list.csv,entity_text.csv}
 ```
 
-`edge_list.csv` uses columns `u,r,i,ts,label`; `entity_text.csv` uses `i,text`. The frozen loader implements the chronological 70%/15%/15% split, the historical inductive-node holdout with data seed 2020, and the GDELT timestamp conversion. Keep the original file contents and row order. The training seed does not redefine the data split.
+`edge_list.csv` uses columns `u,r,i,ts,label`; `entity_text.csv` uses `i,text`. The frozen loader implements the chronological 70%/15%/15% split, a fixed inductive-node holdout, and the GDELT timestamp conversion. Keep the original file contents and row order. Training runs share the same data split.
 
 Provide an existing dataset-specific E5-large-v2 NumPy cache, or generate one:
 
@@ -38,19 +38,19 @@ The original caches are identified by SHA-256 in `configs/gin/*.json`; they are 
 Preview the effective trainer arguments without importing PyTorch, downloading anything, creating outputs, or training:
 
 ```bash
-python scripts/reproduce_gin.py run --dataset GDELT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/GDELT.npy --seeds 42 43 44 45 46 --dry-run
+python scripts/reproduce_gin.py run --dataset GDELT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/GDELT.npy --dry-run
 ```
 
 Run each main-table dataset, substituting your own input paths:
 
 ```bash
-python scripts/reproduce_gin.py run --dataset GDELT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/GDELT.npy --seeds 42 43 44 45 46 --gpu 0
-python scripts/reproduce_gin.py run --dataset ICEWS1819 --data-root /path/DyLink_Datasets --embedding-cache /path/cache/ICEWS1819.npy --seeds 42 43 44 45 46 --gpu 0
-python scripts/reproduce_gin.py run --dataset Enron --data-root /path/DyLink_Datasets --embedding-cache /path/cache/Enron.npy --seeds 42 43 44 45 46 --gpu 0
-python scripts/reproduce_gin.py run --dataset Googlemap_CT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/Googlemap_CT.npy --seeds 42 43 44 45 46 --gpu 0
+python scripts/reproduce_gin.py run --dataset GDELT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/GDELT.npy --gpu 0
+python scripts/reproduce_gin.py run --dataset ICEWS1819 --data-root /path/DyLink_Datasets --embedding-cache /path/cache/ICEWS1819.npy --gpu 0
+python scripts/reproduce_gin.py run --dataset Enron --data-root /path/DyLink_Datasets --embedding-cache /path/cache/Enron.npy --gpu 0
+python scripts/reproduce_gin.py run --dataset Googlemap_CT --data-root /path/DyLink_Datasets --embedding-cache /path/cache/Googlemap_CT.npy --gpu 0
 ```
 
-`--gpu` is the logical device after `CUDA_VISIBLE_DEVICES`. Each seed runs in its own process. To run seeds on separate devices, invoke the command separately with `--seeds 42` through `--seeds 46`. To run a subset, pass its seed list, such as `--seeds 45 46`. `--gpu -1` selects CPU, but large reference datasets are intended for GPU execution.
+`--gpu` is the logical device after `CUDA_VISIBLE_DEVICES`. Each training run uses its own process. `--gpu -1` selects CPU, but large reference datasets are intended for GPU execution. See `run --help` for optional overrides.
 
 Output defaults to `outputs/gin/<dataset>/seed-<seed>/`. Existing seed directories cause an error; use a new `--output-root` for another experiment. Failed runs keep their diagnostic files and do not count toward aggregation. The runner never overwrites or deletes an old checkpoint.
 
@@ -69,20 +69,12 @@ The runner selects the checkpoint by validation **AUC**, restores every learned 
 
 The reported main metric is the DTGB mean of AUC values in canonical groups of 256 positive queries (`test/transductive_auc` and `test/inductive_auc`). Pooled/global AUC is logged separately and is not substituted into the table. Reference input files also require matching query and negative-table fingerprints.
 
-After all five seeds finish:
+Aggregate the experiment outputs:
 
 ```bash
 python scripts/reproduce_gin.py summarize --output-root outputs/gin
 ```
 
-The command reports raw per-seed AUC, the arithmetic mean, and **sample** standard deviation (`ddof=1`). It rejects missing seeds, duplicate seeds, smoke runs, changed inputs, and incompatible source/configuration/evaluation populations. To inspect an unfinished experiment without implying completion:
+The command reports per-run AUC, the arithmetic mean, and **sample** standard deviation (`ddof=1`). Aggregation verifies the configured runs and checks that their sources, inputs, configurations, and evaluation populations match. Add `--allow-input-mismatch` only when intentionally summarizing an input variant; incompatible variants cannot be mixed.
 
-```bash
-python scripts/reproduce_gin.py summarize --output-root outputs/gin --datasets GDELT --allow-partial
-```
-
-`--allow-partial` reports the actual sample count and `five_seed_complete: false`, plus the target and missing seed lists. It does not invent missing values. A single completed seed has `sample_std: null`. Add `--allow-input-mismatch` only when intentionally summarizing an input variant; incompatible variants still cannot be mixed across seeds.
-
-Every successful seed directory contains the chosen `best.pt`, `effective_config.json`, a manifest with source/input hashes and environment versions, `metrics.jsonl`, canonical negative tables, `timing.json`, and `result.json`. The source-preserving adapter in `experiments/gin/protocol.py` applies the audited evaluation rules to the frozen model code. `configs/gin/source-pins.json` checks the retained implementation and the shared seed dispatcher. Reviewed changes to entrypoint seed defaults and TabICL ensemble size are pinned alongside the model code. Two historical unused TabICL files were omitted, and the unrelated baseline configuration loader retains its baseline version. Source and input verification runs locally before training.
-
-For an installation smoke check on a small local dataset, use `--seeds 42 --allow-input-mismatch --smoke-test` and a fresh output directory. This performs one epoch and final checkpoint restoration, marks the result `smoke_test`, and prevents it from entering the main-table aggregate. It does not reproduce the reference metrics.
+Each run directory contains the chosen `best.pt`, `effective_config.json`, a manifest with source/input hashes and environment versions, `metrics.jsonl`, canonical negative tables, `timing.json`, and `result.json`. The adapter in `experiments/gin/protocol.py` applies the evaluation rules to the frozen model code. Source and input verification runs locally before training.

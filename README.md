@@ -5,11 +5,9 @@ LLM predictors, and reusable fusion components. This repository is based on
 [DTGB](https://github.com/zjs123/DTGB) and [DyGLib](https://github.com/yule-BUAA/DyGLib).
 
 **Start with [GIN reproduction](docs/GIN_REPRODUCTION.md).** It contains the
-four dataset recipes, input fingerprints, seed policy, validation-selected
+four dataset recipes, input fingerprints, validation-selected
 checkpoint protocol, and commands to regenerate the GIN row of the main table.
-The default reproduction protocol uses **five seeds**. GIN, Llama training
-and evaluation, and TabICL alignment use `42, 43, 44, 45, 46`; temporal graph
-baselines retain `0, 1, 2, 3, 4`, and TabICL routers use `142, 143, 144, 145, 146`.
+The default reproduction protocol uses **five seeds**.
 Report the mean and sample standard deviation (`ddof=1`) across independent
 training runs. TabICL ensembles average predictions across their five seeds.
 
@@ -64,7 +62,7 @@ python scripts/reproduce_gin.py run \
   --data-root /path/to/DyLink_Datasets \
   --embedding-cache /path/to/embeddings/enron_e5.npy \
   --output-root outputs/gin \
-  --seeds 42 43 44 45 46 --dry-run
+  --dry-run
 ```
 
 Remove `--dry-run` to train and evaluate. Replace the dataset and embedding
