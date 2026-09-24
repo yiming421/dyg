@@ -125,10 +125,23 @@ def _gpu_dense_score_kernel(sources, targets, pred_times,
         for i in range(tid, outer_len, block_dim):
             u_idx = outer_start + i
             u = all_indices[u_idx] # ID-sorted index
-            u_t = all_times[u_idx] # Time for this interaction
-            
-            if u_t >= t_pred:
-                continue # Edge too new
+            # Only the first entry of each equal-ID group owns that neighbor.
+            # Counting every historical event here would overcount CN/AA/RA
+            # whenever an endpoint interacted with the same neighbor repeatedly.
+            if u_idx > outer_start and all_indices[u_idx - 1] == u:
+                continue
+
+            # ID sorting does not sort timestamps within an equal-ID group.
+            # A group is valid if ANY of its events strictly precedes t_pred.
+            u_valid = False
+            k = u_idx
+            while k < outer_end and all_indices[k] == u:
+                if all_times[k] < t_pred:
+                    u_valid = True
+                    break
+                k += 1
+            if not u_valid:
+                continue
                 
             # Binary Search for 'u' in 'inner' range
             # inner indices are sorted by ID

@@ -105,11 +105,13 @@ if __name__ == "__main__":
                 neighbor_sampler=train_neighbor_sampler,
                 scope=args.dygformer_heuristic_scope,
                 recent_cap=recent_cap,
+                use_gpu_heuristics=args.dygformer_gpu_heuristics,
             )
             full_heuristic_extractor = build_dygformer_heuristic_extractor(
                 neighbor_sampler=full_neighbor_sampler,
                 scope=args.dygformer_heuristic_scope,
                 recent_cap=recent_cap,
+                use_gpu_heuristics=args.dygformer_gpu_heuristics,
             )
             fit_training_heuristic_normalization(
                 train_heuristic_extractor, train_data.src_node_ids,

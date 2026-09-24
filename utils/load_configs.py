@@ -98,6 +98,8 @@ def get_link_prediction_args(is_evaluation: bool = False):
                         help='train DyGFormer without its pairwise neighbor co-occurrence encoder/channel')
     parser.add_argument('--dygformer_use_heuristics', action='store_true',
                         help='add a learned logit head over recency, target popularity, past interactions, and RA')
+    parser.add_argument('--dygformer_gpu_heuristics', action='store_true',
+                        help='use CUDA common-neighbor scoring for full-history heuristics; validate with scripts/with_numba_cuda.py')
     parser.add_argument('--dygformer_heuristic_scope', type=str, default='sequence',
                         choices=['sequence', 'full'],
                         help="heuristic history: DyGFormer's latest sequence interactions or all causal history")

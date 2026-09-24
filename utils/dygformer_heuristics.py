@@ -193,7 +193,7 @@ class RecentInteractionHeuristicExtractor(FixedHeuristicScaling):
 
 
 def build_dygformer_heuristic_extractor(
-    *, neighbor_sampler, scope: str, recent_cap: int
+    *, neighbor_sampler, scope: str, recent_cap: int, use_gpu_heuristics: bool = False
 ):
     scope = str(scope).strip().lower()
     if scope == "sequence":
@@ -209,7 +209,7 @@ def build_dygformer_heuristic_extractor(
 
         return HeuristicFeatureExtractor(
             neighbor_sampler=neighbor_sampler,
-            use_gpu_heuristics=False,
+            use_gpu_heuristics=use_gpu_heuristics,
             feature_names=HEURISTIC_FEATURE_NAMES,
         )
     raise ValueError(f"Unsupported DyGFormer heuristic scope: {scope!r}")
