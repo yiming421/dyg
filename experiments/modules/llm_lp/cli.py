@@ -1089,8 +1089,8 @@ def build_arg_parser():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="/data/ranjiaxin_data/models/Meta-Llama-3.1-8B-Instruct/",
-        help="Path to Llama model",
+        default=None,
+        help="Local model directory or Hugging Face model identifier",
     )
     parser.add_argument(
         "--num_samples",

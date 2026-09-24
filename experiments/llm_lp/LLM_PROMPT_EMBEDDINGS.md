@@ -39,14 +39,6 @@ vLLM's `extract_hidden_states` execution path and disables chunked prefill, so
 some throughput loss is expected. Runs without `--capture_prompt_embeddings`
 use the original vLLM configuration and have no capture overhead.
 
-On one local A100 smoke benchmark with Llama-3.2-1B, 128 short prompts, and two
-generated tokens per prompt, the normal compiled path processed about 1,548
-prompts/s. Capture processed about 1,007 prompts/s including loading and
-normalizing all 128 vectors: roughly 35% lower throughput, or 1.54x elapsed
-time. Vector loading itself took 0.021 s for the batch. This is a directional
-microbenchmark, not a substitute for measuring the actual longer DTGB prompts
-and production batch sizes.
-
 When the parent process has already touched CUDA, launch vLLM with
 `VLLM_WORKER_MULTIPROC_METHOD=spawn`; the default `fork` mode can inherit an
 invalid CUDA runtime state in the engine child.

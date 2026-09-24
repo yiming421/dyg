@@ -74,7 +74,6 @@ outputs/
 *.swp
 *.swo
 
-/DyCo-LLM
 /papers
 /openspec
 /.codex/
