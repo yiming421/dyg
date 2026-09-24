@@ -1,0 +1,103 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/type/lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+.cache/
+result/
+
+# Local maintenance and exploratory work stays outside the published repository.
+/test/
+/tests/
+test_*.py
+*_test.py
+/CONTRIBUTING.md
+/AGENTS.md
+/docs/VALIDATION.md
+/scratch/
+/local/
+/experiments/archive/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-meta/
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# IDE/editor metadata
+.vscode/
+.idea/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Experiment and training artifacts
+/analysis/
+wandb/
+logs/
+saved_models/
+checkpoints/
+runs/
+outputs/
+
+# Model checkpoints and local arrays
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# Local run/debug outputs
+*.out
+*.log
+
+# Temp files
+*.tmp
+*.swp
+*.swo
+
+/DyCo-LLM
+/papers
+/openspec
+/.codex/
+/llm_eval_results.json
+/llm_eval_results.json.*
+/.dp_sync/
+*.dp_sync/
+
+/saved_results
+
+# Data and generated experiment artifacts stay outside the repository.
+/docs/results/
+/artifacts/
+/evidence/
+/metrics/
+*.safetensors
+*.joblib
+*.jsonl
+/DyLink_Datasets/
+/data/
+/embeddings/
+/results/
+.env
+.env.*
+!.env.example
+/.agents/
