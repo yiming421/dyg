@@ -13,9 +13,10 @@ import hashlib
 import random
 
 import numpy as np
+from utils.graph_history import TRAIN_HISTORY_POLICY
 
 
-TRAIN_DATA_PROTOCOLS = ("dtgb_strict", "legacy_time_only")
+TRAIN_DATA_PROTOCOLS = ("dtgb_strict",)
 
 
 def _node_ids_sha256(node_ids):
@@ -64,10 +65,8 @@ def resolve_training_protocol(
     name, split = str(train_data_protocol).strip().lower(), str(split_name).strip().lower()
     if name not in TRAIN_DATA_PROTOCOLS:
         raise ValueError(f"Unknown train_data_protocol={name!r}")
-    if split not in {"train", "pretest", "validation"}:
+    if split not in {"train", "validation"}:
         raise ValueError(f"Unsupported split_name={split!r}")
-    if name == "dtgb_strict" and split == "pretest":
-        raise ValueError("dtgb_strict forbids pretest training; use split_name='train'")
     if not (np.isfinite(val_ratio) and np.isfinite(test_ratio)
             and 0 <= val_ratio < 1 and 0 <= test_ratio < 1 and val_ratio + test_ratio < 1):
         raise ValueError("Require finite nonnegative split ratios with sum below one")
@@ -80,34 +79,21 @@ def resolve_training_protocol(
     src, dst = src.astype(np.int64), dst.astype(np.int64)
     times = raw.copy()
     if apply_gdelt_time_bucket:
-        times = (np.floor(raw / 15) if name == "dtgb_strict" else
-                 np.floor_divide(raw.astype(np.int64), 15).astype(np.float64))
+        times = np.floor(raw / 15)
     val_time, test_time = map(float, np.quantile(times, [1 - val_ratio - test_ratio, 1 - test_ratio]))
-    reserved = np.array([], dtype=np.int64)
-    observed_mask = np.ones(len(raw), dtype=bool)
-    if name == "dtgb_strict":
-        node_set = set(src).union(set(dst))
-        test_node_set = set(src[times > val_time]).union(set(dst[times > val_time]))
-        count = int(.1 * len(node_set))
-        if count > len(test_node_set):
-            raise ValueError("Canonical DTGB reserved-node population is too small for its prescribed sample")
-        selected = random.Random(int(data_seed)).sample(list(test_node_set), count)
-        reserved = np.asarray(sorted(selected), dtype=np.int64)
-        observed_mask = ~(np.isin(src, reserved) | np.isin(dst, reserved))
+    node_set = set(src).union(set(dst))
+    test_node_set = set(src[times > val_time]).union(set(dst[times > val_time]))
+    count = int(.1 * len(node_set))
+    if count > len(test_node_set):
+        raise ValueError("Canonical DTGB reserved-node population is too small for its prescribed sample")
+    selected = random.Random(int(data_seed)).sample(list(test_node_set), count)
+    reserved = np.asarray(sorted(selected), dtype=np.int64)
+    observed_mask = ~(np.isin(src, reserved) | np.isin(dst, reserved))
     observed_train = (times <= val_time) & observed_mask
     observed_nodes = np.unique(np.r_[src[observed_train], dst[observed_train]])
-    if name == "dtgb_strict":
-        mask = observed_train if split == "train" else ((times > val_time) & (times <= test_time))
-        pool_mask = observed_train if split == "train" else times <= test_time
-        history_mask = observed_train if split == "train" else np.ones(len(raw), dtype=bool)
-    else:
-        if split == "train":
-            mask, pool_mask = times < val_time, times < val_time
-        elif split == "pretest":
-            mask, pool_mask = times < test_time, times < test_time
-        else:
-            mask, pool_mask = (times >= val_time) & (times < test_time), times < test_time
-        history_mask = np.ones(len(raw), dtype=bool)
+    mask = observed_train if split == "train" else ((times > val_time) & (times <= test_time))
+    pool_mask = observed_train if split == "train" else times <= test_time
+    history_mask = observed_train if split == "train" else np.ones(len(raw), dtype=bool)
     pool = np.unique(dst[pool_mask])
     metadata = {
         "name": name, "split_name": split, "data_seed": int(data_seed),
@@ -127,15 +113,13 @@ def resolve_training_protocol(
         "observed_training_graph_identity_sha256": _graph_sha256(edges_df, observed_train),
         "negative_destination_pool_sha256": _node_ids_sha256(pool),
         "graph_identity_hash_schema": "dtgb_graph_u_r_i_ts_v1; ordered column-major little-endian int64 u/r/i and float64 ts",
-        "query_boundary": ("t <= val_time" if split == "train" else "val_time < t <= test_time")
-            if name == "dtgb_strict" else "legacy half-open time-only window",
+        "query_boundary": "t <= val_time" if split == "train" else "val_time < t <= test_time",
         "history_policy": "observed_training_graph_only" if name == "dtgb_strict" and split == "train"
             else "full_graph_causal_per_query_history",
         "history_per_query_cutoff": "strictly earlier RAW timestamp than the query",
         "strict_train_node_isolation": name == "dtgb_strict" and split == "train",
         "global_prompt_statistics_source": "observed_training_graph_only"
-            if name == "dtgb_strict" and split == "train" else "legacy/full_graph",
-        "legacy_protocol_preserved_explicitly": name == "legacy_time_only",
+            if split == "train" else "full_graph",
     }
     for array in (times, reserved, observed_nodes, mask, history_mask, pool):
         array.setflags(write=False)
@@ -157,6 +141,49 @@ def protocol_history_edges(edges_df, protocol):
         if np.any(protocol.split_times[protocol.history_mask] > protocol.val_time):
             raise ValueError("Validation/future row in strict training history graph")
     return result
+
+
+def tag_training_history(samples, protocol):
+    """Carry the resolved training boundary through deferred feature/scoring paths."""
+    if protocol.name != "dtgb_strict" or protocol.split_name != "train":
+        return samples
+    keys = ("data_seed", "val_ratio", "test_ratio", "apply_gdelt_time_bucket",
+            "full_graph_identity_sha256", "history_graph_identity_sha256")
+    spec = {key: protocol.metadata[key] for key in keys}
+    for sample in samples:
+        sample["graph_history_scope"] = "train"
+        sample["train_history_policy"] = TRAIN_HISTORY_POLICY
+        sample["training_history_spec"] = spec
+    return samples
+
+
+def sample_history_scope(samples):
+    scopes = {sample.get("graph_history_scope", "evaluation") for sample in samples}
+    if len(scopes) > 1 or not scopes <= {"train", "evaluation"}:
+        raise ValueError("A scoring batch must use one graph history scope")
+    return next(iter(scopes), "evaluation")
+
+
+def history_edges_for_samples(edges_df, samples):
+    """Resolve training history even when a downstream caller supplies full data."""
+    if sample_history_scope(samples) != "train":
+        return edges_df
+    spec = samples[0].get("training_history_spec")
+    if not isinstance(spec, dict) or any(s.get("training_history_spec") != spec for s in samples):
+        raise ValueError("Training samples require one verified history specification")
+    identity = _graph_sha256(edges_df)
+    if identity == spec["history_graph_identity_sha256"]:
+        return edges_df
+    if identity != spec["full_graph_identity_sha256"]:
+        raise ValueError("Training history graph does not match the sample provenance")
+    protocol = resolve_training_protocol(
+        edges_df, split_name="train", train_data_protocol="dtgb_strict",
+        **{key: spec[key] for key in ("data_seed", "val_ratio", "test_ratio", "apply_gdelt_time_bucket")},
+    )
+    history = protocol_history_edges(edges_df, protocol)
+    if protocol.metadata["history_graph_identity_sha256"] != spec["history_graph_identity_sha256"]:
+        raise ValueError("Resolved training history differs from the sample provenance")
+    return history
 
 
 def validate_protocol_samples(samples, protocol):
@@ -237,4 +264,5 @@ def validate_protocol_samples(samples, protocol):
 
 
 __all__ = ["TRAIN_DATA_PROTOCOLS", "TrainingProtocol", "resolve_training_protocol",
-           "protocol_history_edges", "validate_protocol_samples"]
+           "protocol_history_edges", "validate_protocol_samples", "tag_training_history",
+           "sample_history_scope", "history_edges_for_samples"]

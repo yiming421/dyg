@@ -1118,12 +1118,16 @@ class TemporalNeighborIndex:
 
 
 def make_subset(data, mask: np.ndarray):
-    return SimpleNamespace(
+    subset = SimpleNamespace(
         src_node_ids=data.src_node_ids[mask],
         dst_node_ids=data.dst_node_ids[mask],
         node_interact_times=data.node_interact_times[mask],
         num_interactions=int(mask.sum()),
     )
+    for name in ('edge_ids', 'labels'):
+        if hasattr(data, name):
+            setattr(subset, name, getattr(data, name)[mask])
+    return subset
 
 
 def build_lookup_tensor(entity_ids_sorted, max_node_id: int, device: torch.device) -> torch.Tensor:

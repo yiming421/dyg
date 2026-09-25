@@ -839,7 +839,7 @@ def build_semantic_mlp_arg_parser(str2bool):
         "--strict_no_leakage",
         type=str2bool,
         default=True,
-        help="Use only train+val history for smoothing: true/false",
+        help="Retained checkpoint flag; training history always uses observed train_data.",
     )
     parser.add_argument(
         "--profile_runtime",

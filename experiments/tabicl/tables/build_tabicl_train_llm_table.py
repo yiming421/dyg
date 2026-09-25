@@ -303,6 +303,9 @@ def join_routed_debug(
             if not line.strip():
                 continue
             row = json.loads(line)
+            if expected_debug_split == "train":
+                from utils.graph_history import require_training_history_table
+                require_training_history_table(row)
             if str(row.get("split")) != expected_debug_split:
                 raise ValueError(
                     f"Unexpected split in {debug_jsonl}:{line_number}: "
@@ -578,6 +581,8 @@ def main() -> None:
 
     with np.load(args.base_table, allow_pickle=False) as base:
         payload = {key: base[key] for key in base.files}
+    from utils.graph_history import require_training_history_table
+    require_training_history_table(payload)
 
     full_result, full_hybrid = load_trial_hybrid(
         args.full_result_json, "full"

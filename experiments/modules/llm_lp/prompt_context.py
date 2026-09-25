@@ -598,6 +598,8 @@ def calibrate_prompt_key_signals(
     use_gpu_heuristics=True,
     heuristic_recent_degree_window=30.0,
 ):
+    from experiments.modules.llm_lp.training_protocol import history_edges_for_samples
+    edges_df = history_edges_for_samples(edges_df, samples)
     if not samples:
         return samples
 
@@ -742,6 +744,8 @@ def materialize_samples_prompt_context(
     key signals are computed, but expensive history/common-neighbor payloads are
     left empty so hybrid full-set preparation can stay lightweight.
     """
+    from experiments.modules.llm_lp.training_protocol import history_edges_for_samples
+    edges_df = history_edges_for_samples(edges_df, samples)
     if not samples:
         return samples
 

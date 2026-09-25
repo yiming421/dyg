@@ -23,6 +23,16 @@ SEMANTIC_SOURCE_INIT_VERSION = 2
 SEMANTIC_SOURCE_INIT_CHOICES = {"raw", "history_mean"}
 
 
+def _supernode_embedding(x: torch.Tensor, adjacency: torch.Tensor) -> torch.Tensor:
+    """Match the virtual node's feature scope to its actual history neighbors."""
+    adjacency = adjacency.coalesce()
+    rows, cols = adjacency.indices()
+    neighbors = cols[(rows == x.size(0)) & (cols < x.size(0)) & (adjacency.values() != 0)]
+    if neighbors.numel() == 0:
+        return x.new_zeros((1, x.size(1)))
+    return x[neighbors].mean(dim=0, keepdim=True)
+
+
 def normalize_semantic_source_init(value: str, *, field_name: str = "source_init") -> str:
     normalized = str(value).strip().lower()
     if normalized not in SEMANTIC_SOURCE_INIT_CHOICES:
@@ -701,7 +711,7 @@ class LearnableGCNEncoder(nn.Module):
             h = x
             drop_supernode = False
         elif norm_adj.size(0) == x.size(0) + 1:
-            super_emb = x.mean(dim=0, keepdim=True)
+            super_emb = _supernode_embedding(x, norm_adj)
             h = torch.cat([x, super_emb], dim=0)
             drop_supernode = True
         else:
@@ -848,7 +858,7 @@ class LearnableGINEncoder(nn.Module):
             h = x
             drop_supernode = False
         elif sum_adj.size(0) == x.size(0) + 1:
-            super_emb = x.mean(dim=0, keepdim=True)
+            super_emb = _supernode_embedding(x, sum_adj)
             h = torch.cat([x, super_emb], dim=0)
             drop_supernode = True
         else:
@@ -1667,7 +1677,7 @@ def apply_static_smoothing_operator(
         out = embeddings
         drop_supernode = False
     elif norm_adj.size(0) == embeddings.size(0) + 1:
-        super_emb = embeddings.mean(dim=0, keepdim=True)
+        super_emb = _supernode_embedding(embeddings, norm_adj)
         out = torch.cat([embeddings, super_emb], dim=0)
         drop_supernode = True
     else:

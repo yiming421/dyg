@@ -195,6 +195,8 @@ def require_table_schema(
     table: np.lib.npyio.NpzFile,
     eval_split: str = "test",
 ) -> None:
+    from utils.graph_history import require_training_history_table
+    require_training_history_table(table)
     required = {
         "route_center",
         "validation_gnn",

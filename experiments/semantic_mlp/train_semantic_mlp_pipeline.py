@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -39,6 +38,7 @@ from experiments.modules.llm_lp.cli import (
 from experiments.modules.llm_lp.experiment import build_prompt_entity_map
 from utils.seed_runs import launch_seed_workers
 from utils.heuristic_scaling import fit_training_heuristic_normalization
+from utils.graph_history import TRAIN_HISTORY_POLICY, graph_history
 from utils.DataLoader import get_link_prediction_data, get_idx_data_loader
 from utils.utils import NegativeEdgeSampler, get_neighbor_sampler, set_random_seed
 
@@ -549,18 +549,12 @@ def main():
         base_emb_t = torch.from_numpy(base_embeddings).float().to(device)
         base_emb_t = base_emb_t / torch.norm(base_emb_t, dim=1, keepdim=True).clamp(min=1e-12)
 
-    if args.strict_no_leakage:
-        test_start_time = float(test_data.node_interact_times[0])
-        hist_mask = full_data.node_interact_times < test_start_time
-        smooth_src = full_data.src_node_ids[hist_mask]
-        smooth_dst = full_data.dst_node_ids[hist_mask]
-        smooth_times = full_data.node_interact_times[hist_mask]
-        print(f"Smoothing graph (strict): {len(smooth_src):,} edges (train+val)")
-    else:
-        smooth_src = full_data.src_node_ids
-        smooth_dst = full_data.dst_node_ids
-        smooth_times = full_data.node_interact_times
-        print(f"Smoothing graph (full): {len(smooth_src):,} edges")
+    # Training graph access follows the same reserved-node and optional edge
+    # holdout masks as the supervised queries, including static control models.
+    smooth_src = train_data.src_node_ids
+    smooth_dst = train_data.dst_node_ids
+    smooth_times = train_data.node_interact_times
+    print(f"Smoothing graph: {len(smooth_src):,} observed training edges")
 
     if args.smooth_cutoff_time is not None:
         smooth_mask = smooth_times < float(args.smooth_cutoff_time)
@@ -572,20 +566,10 @@ def main():
     if len(smooth_src) == 0:
         raise ValueError("No edges left for smoothing. Relax smoothing cutoff/time-window settings.")
 
-    # Rolling temporal state reads the complete authoritative stream and
-    # applies a strict time cutoff inside each batch. This is leakage-safe and
-    # prevents inductive-only evaluation from omitting interleaved
-    # transductive interactions. Keep the optional explicit smoothing cutoff.
-    rolling_src = np.asarray(full_data.src_node_ids, dtype=np.int64)
-    rolling_dst = np.asarray(full_data.dst_node_ids, dtype=np.int64)
-    rolling_times = np.asarray(full_data.node_interact_times, dtype=np.float64)
-    rolling_edge_ids = np.asarray(full_data.edge_ids, dtype=np.int64)
-    if args.smooth_cutoff_time is not None:
-        rolling_mask = rolling_times < float(args.smooth_cutoff_time)
-        rolling_src = rolling_src[rolling_mask]
-        rolling_dst = rolling_dst[rolling_mask]
-        rolling_times = rolling_times[rolling_mask]
-        rolling_edge_ids = rolling_edge_ids[rolling_mask]
+    # Evaluation observes the full causal stream, including interleaved edges.
+    # Time filtering inside each provider/index is independent of node isolation.
+    train_history = graph_history(train_data, args.smooth_cutoff_time)
+    eval_history = graph_history(full_data, args.smooth_cutoff_time)
 
     smoothing_base_emb_t = base_emb_t
     if semantic_smoothing_enabled and source_init_requested != source_init_effective:
@@ -737,11 +721,9 @@ def main():
                     endpoint_topk_mode=args.smooth_endpoint_topk_mode,
                     return_norm_adj=True,
                 )
-            elif args.smoothed_embedding_cache and os.path.exists(args.smoothed_embedding_cache):
-                print(f"Loading smoothed embeddings from {args.smoothed_embedding_cache}")
-                smoothed_np = np.load(args.smoothed_embedding_cache)
-                smoothed_embeddings = torch.from_numpy(smoothed_np).float().to(device)
             else:
+                # Rebuild graph-derived features from this run's training graph;
+                # a bare array cache cannot establish its split provenance.
                 print("Computing smoothed embeddings...")
                 smoothed_embeddings = smooth_embeddings_by_time_window_torch(
                     embeddings=smoothing_base_emb_t,
@@ -769,55 +751,26 @@ def main():
                     np.save(args.smoothed_embedding_cache, smoothed_embeddings.detach().cpu().numpy())
                     print(f"Saved smoothed embeddings to {args.smoothed_embedding_cache}")
     lookup = build_lookup_tensor(entity_ids, max_node_id, device)
-    cross_attn_neighbor_index = None
-    if args.scorer_type in {'cross_attention', 'dygformer_lite'}:
-        index_label = "cross-attention" if args.scorer_type == 'cross_attention' else "DyGFormer-lite"
-        print(f"Building temporal neighbor index for {index_label} scorer...")
-        cross_attn_neighbor_index = TemporalNeighborIndex(
-            src_node_ids=smooth_src,
-            dst_node_ids=smooth_dst,
-            node_interact_times=smooth_times,
-            max_node_id=max_node_id,
-            undirected=FIXED_CROSS_ATTN_UNDIRECTED_HISTORY,
-        )
-    ncn_neighbor_index = None
-    if args.scorer_type == 'ncn':
-        # Keep NCN on its own binary temporal history graph rather than reusing any
-        # smoothing operator state. This keeps the overlap structure explicit and
-        # avoids supernode/weighted-adjacency semantics leaking into the scorer.
-        print("Building temporal neighbor index for NCN scorer...")
-        ncn_neighbor_index = TemporalNeighborIndex(
-            src_node_ids=smooth_src,
-            dst_node_ids=smooth_dst,
-            node_interact_times=smooth_times,
-            max_node_id=max_node_id,
-            undirected=True,
-        )
-    seqfilter_neighbor_index = None
-    if args.scorer_type == 'seqfilter':
-        print("Building temporal neighbor index for SeqFilter scorer...")
-        seqfilter_neighbor_index = TemporalNeighborIndex(
-            src_node_ids=smooth_src,
-            dst_node_ids=smooth_dst,
-            node_interact_times=smooth_times,
-            max_node_id=max_node_id,
-            undirected=args.smooth_undirected,
-        )
-    scorer_neighbor_index = (
-        cross_attn_neighbor_index
-        if args.scorer_type in {'cross_attention', 'dygformer_lite'}
-        else (ncn_neighbor_index if args.scorer_type == 'ncn' else seqfilter_neighbor_index)
-    )
-    mp_neighbor_index = None
-    if args.use_learnable_gcn and args.learnable_mp_type == 'attn_pool':
-        print("Building temporal neighbor index for attention-pooling message passing...")
-        mp_neighbor_index = TemporalNeighborIndex(
-            src_node_ids=smooth_src,
-            dst_node_ids=smooth_dst,
-            node_interact_times=smooth_times,
-            max_node_id=max_node_id,
-            undirected=args.smooth_undirected,
-        )
+    def _make_neighbor_indexes(history):
+        def index(undirected):
+            return TemporalNeighborIndex(
+                src_node_ids=history.src_node_ids,
+                dst_node_ids=history.dst_node_ids,
+                node_interact_times=history.node_interact_times,
+                max_node_id=max_node_id, undirected=undirected,
+            )
+        scorer_index = None
+        if args.scorer_type in {'cross_attention', 'dygformer_lite', 'ncn', 'seqfilter'}:
+            undirected = (args.smooth_undirected if args.scorer_type == 'seqfilter'
+                          else FIXED_CROSS_ATTN_UNDIRECTED_HISTORY)
+            scorer_index = index(undirected)
+        mp_index = (index(args.smooth_undirected)
+                    if args.use_learnable_gcn and args.learnable_mp_type == 'attn_pool'
+                    else None)
+        return scorer_index, mp_index
+
+    train_scorer_neighbor_index, train_mp_neighbor_index = _make_neighbor_indexes(train_history)
+    scorer_neighbor_index, mp_neighbor_index = _make_neighbor_indexes(eval_history)
     node_city_ids = None
     node_zip_ids = None
     location_feature_names = {"city_preference", "zip_preference"} & set(
@@ -844,29 +797,17 @@ def main():
             f"zip_nodes={int(np.sum(node_zip_ids >= 0)):,} ({len(zip_to_id):,} ZIPs)"
         )
 
-    heuristic_extractor = None
-    if args.use_heuristic_features:
-        print("Building heuristic feature extractor...")
-        # Every heuristic kernel applies interaction_time < prediction_time.
-        # Supplying full_data is therefore causal and lets test-period history
-        # evolve instead of freezing all features at the test boundary.
-        heuristic_graph_data = SimpleNamespace(
-            src_node_ids=np.asarray(full_data.src_node_ids, dtype=np.int64),
-            dst_node_ids=np.asarray(full_data.dst_node_ids, dtype=np.int64),
-            edge_ids=np.arange(len(full_data.src_node_ids), dtype=np.int64),
-            node_interact_times=np.asarray(full_data.node_interact_times, dtype=np.float64),
-        )
+    def _make_heuristic_extractor(data):
+        history = graph_history(data)
         heuristic_neighbor_sampler = get_neighbor_sampler(
-            data=heuristic_graph_data,
-            sample_neighbor_strategy='recent',
-            seed=args.seed,
+            data=history, sample_neighbor_strategy='recent', seed=args.seed,
         )
-        heuristic_extractor = HeuristicFeatureExtractor(
+        return HeuristicFeatureExtractor(
             neighbor_sampler=heuristic_neighbor_sampler,
-            directed_src_node_ids=np.asarray(full_data.src_node_ids, dtype=np.int64),
-            directed_dst_node_ids=np.asarray(full_data.dst_node_ids, dtype=np.int64),
+            directed_src_node_ids=np.asarray(history.src_node_ids, dtype=np.int64),
+            directed_dst_node_ids=np.asarray(history.dst_node_ids, dtype=np.int64),
             directed_node_interact_times=np.asarray(
-                full_data.node_interact_times, dtype=np.float64
+                history.node_interact_times, dtype=np.float64
             ),
             use_gpu_heuristics=args.use_gpu_heuristics,
             popularity_decay=args.heuristic_popularity_decay,
@@ -877,6 +818,12 @@ def main():
             node_city_ids=node_city_ids,
             node_zip_ids=node_zip_ids,
         )
+
+    train_heuristic_extractor = None
+    heuristic_extractor = None
+    if args.use_heuristic_features:
+        train_heuristic_extractor = _make_heuristic_extractor(train_data)
+        heuristic_extractor = _make_heuristic_extractor(full_data)
 
     train_loader = get_idx_data_loader(
         list(range(len(train_data.src_node_ids))),
@@ -996,15 +943,18 @@ def main():
     new_node_neg_raw_heuristic_features = None
     if heuristic_extractor is not None:
         print("Precomputing cached heuristic features for fixed splits...")
-        train_pos_raw_heuristic_features = heuristic_extractor.precompute_raw_features(
+        train_pos_raw_heuristic_features = train_heuristic_extractor.precompute_raw_features(
             sources=train_data.src_node_ids,
             targets=train_data.dst_node_ids,
             prediction_times=train_data.node_interact_times,
             desc="Heuristics: train positives",
         )
         fit_training_heuristic_normalization(
-            heuristic_extractor, train_data.src_node_ids, train_data.dst_node_ids,
+            train_heuristic_extractor, train_data.src_node_ids, train_data.dst_node_ids,
             train_data.node_interact_times, positive_features=train_pos_raw_heuristic_features,
+        )
+        heuristic_extractor.load_normalization_state_dict(
+            train_heuristic_extractor.normalization_state_dict()
         )
         val_pos_raw_heuristic_features = heuristic_extractor.precompute_raw_features(
             sources=val_data.src_node_ids,
@@ -1083,13 +1033,13 @@ def main():
         or source_init_effective == 'history_mean'
     )
     if needs_rolling_provider:
-        def _make_provider(split_start_time: float):
+        def _make_provider(history):
             return RollingSmoothedEmbeddingProvider(
                 base_embeddings=smoothing_base_emb_t,
                 lookup=lookup,
-                init_src_node_ids=rolling_src,
-                init_dst_node_ids=rolling_dst,
-                init_node_interact_times=rolling_times,
+                init_src_node_ids=history.src_node_ids,
+                init_dst_node_ids=history.dst_node_ids,
+                init_node_interact_times=history.node_interact_times,
                 smooth_time_window=args.smooth_time_window,
                 smooth_steps=args.smooth_steps,
                 smooth_decay_gamma=args.smooth_decay_gamma,
@@ -1106,7 +1056,7 @@ def main():
                 apply_smoothing=(not mp_replaces_smoothing or graph_mp_uses_smoothing_adj),
                 history_is_complete=True,
                 materialize_smoothed_embeddings=not args.use_learnable_gcn,
-                init_edge_ids=rolling_edge_ids,
+                init_edge_ids=history.edge_ids,
                 export_temporal_relational_context=args.use_temporal_relational_gcn,
                 temporal_relational_num_relations=(
                     int(relation_features_t.size(0))
@@ -1118,10 +1068,10 @@ def main():
                 ),
             )
 
-        train_rolling_provider = _make_provider(float(np.min(train_data.node_interact_times)))
-        val_rolling_provider = _make_provider(float(np.min(val_data.node_interact_times)))
-        test_rolling_provider = _make_provider(float(np.min(test_data.node_interact_times)))
-        new_node_test_rolling_provider = _make_provider(float(np.min(new_node_test_data.node_interact_times)))
+        train_rolling_provider = _make_provider(train_history)
+        val_rolling_provider = _make_provider(eval_history)
+        test_rolling_provider = _make_provider(eval_history)
+        new_node_test_rolling_provider = _make_provider(eval_history)
     if not semantic_smoothing_enabled:
         active_embeddings = base_emb_t
     elif args.use_learnable_entity_embeddings:
@@ -1287,7 +1237,7 @@ def main():
         )
         ridge_neg_raw_features = None
         if heuristic_extractor is not None:
-            ridge_neg_raw_features = heuristic_extractor.precompute_raw_features(
+            ridge_neg_raw_features = train_heuristic_extractor.precompute_raw_features(
                 sources=ridge_neg_src,
                 targets=ridge_neg_dst,
                 prediction_times=ridge_neg_times,
@@ -1309,7 +1259,7 @@ def main():
             rolling_provider=train_rolling_provider,
             static_ncn_adj=static_ncn_adj,
             static_mplp_exact_adj2=static_mplp_exact_adj2,
-            heuristic_extractor=heuristic_extractor,
+            heuristic_extractor=train_heuristic_extractor,
             use_mplp_exact_features=args.use_mplp_exact_features,
             static_smoothing_adj=static_smoothing_adj,
             static_smoothing_steps=args.smooth_steps,
@@ -1435,6 +1385,7 @@ def main():
             'dataset_name': args.dataset_name,
             'rolling_smoothing': rolling_enabled,
             'strict_no_leakage': args.strict_no_leakage,
+            'train_history_policy': TRAIN_HISTORY_POLICY,
             'train_edge_cutoff_time': args.train_edge_cutoff_time,
             'train_edge_cutoff_ratio': args.train_edge_cutoff_ratio,
             'train_holdout_recent_edges': args.train_holdout_recent_edges,
@@ -1587,9 +1538,9 @@ def main():
                 gcn_encoder=gcn_encoder,
                 learnable_mp_type=args.learnable_mp_type,
                 mp_adj=static_mp_adj,
-                mp_neighbor_index=mp_neighbor_index,
+                mp_neighbor_index=train_mp_neighbor_index,
                 mp_num_neighbors=args.attn_mp_num_neighbors,
-                neighbor_index=scorer_neighbor_index,
+                neighbor_index=train_scorer_neighbor_index,
                 static_ncn_adj=static_ncn_adj,
                 static_mplp_exact_adj2=static_mplp_exact_adj2,
                 cross_attn_num_neighbors=args.cross_attn_num_neighbors,
@@ -1600,7 +1551,7 @@ def main():
                 train_neg_sampler_historical=train_neg_sampler_historical,
                 train_rand_ratio=args.train_rand_ratio,
                 historical_strict_gap=args.historical_neg_strict_gap,
-                heuristic_extractor=heuristic_extractor,
+                heuristic_extractor=train_heuristic_extractor,
                 heuristic_fusion=heuristic_fusion,
                 mplp_exact_fusion=mplp_exact_fusion,
                 semantic_aux_fusion_mode=args.semantic_aux_fusion_mode,
@@ -1681,9 +1632,9 @@ def main():
                 gcn_encoder=gcn_encoder,
                 learnable_mp_type=args.learnable_mp_type,
                 mp_adj=static_mp_adj,
-                mp_neighbor_index=mp_neighbor_index,
+                mp_neighbor_index=train_mp_neighbor_index,
                 mp_num_neighbors=args.attn_mp_num_neighbors,
-                neighbor_index=scorer_neighbor_index,
+                neighbor_index=train_scorer_neighbor_index,
                 static_ncn_adj=static_ncn_adj,
                 static_mplp_exact_adj2=static_mplp_exact_adj2,
                 cross_attn_num_neighbors=args.cross_attn_num_neighbors,
@@ -1694,7 +1645,7 @@ def main():
                 train_neg_sampler_historical=train_neg_sampler_historical,
                 train_rand_ratio=args.train_rand_ratio,
                 historical_strict_gap=args.historical_neg_strict_gap,
-                heuristic_extractor=heuristic_extractor,
+                heuristic_extractor=train_heuristic_extractor,
                 heuristic_fusion=heuristic_fusion,
                 mplp_exact_fusion=mplp_exact_fusion,
                 semantic_aux_fusion_mode=args.semantic_aux_fusion_mode,
@@ -1741,7 +1692,7 @@ def main():
                 debug_every=args.debug_negative_precompute_every,
             )
             if heuristic_extractor is not None:
-                train_neg_raw_heuristic_features_epoch = heuristic_extractor.precompute_raw_features(
+                train_neg_raw_heuristic_features_epoch = train_heuristic_extractor.precompute_raw_features(
                     sources=train_neg_src_epoch,
                     targets=train_neg_dst_epoch,
                     prediction_times=train_neg_times_epoch,
@@ -1767,16 +1718,16 @@ def main():
                 gcn_encoder=gcn_encoder,
                 learnable_mp_type=args.learnable_mp_type,
                 mp_adj=static_mp_adj,
-                mp_neighbor_index=mp_neighbor_index,
+                mp_neighbor_index=train_mp_neighbor_index,
                 mp_num_neighbors=args.attn_mp_num_neighbors,
-                neighbor_index=scorer_neighbor_index,
+                neighbor_index=train_scorer_neighbor_index,
                 static_ncn_adj=static_ncn_adj,
                 static_mplp_exact_adj2=static_mplp_exact_adj2,
                 cross_attn_num_neighbors=args.cross_attn_num_neighbors,
                 ncn_num_neighbors=args.ncn_num_neighbors,
                 seqfilter_num_neighbors=args.seqfilter_num_neighbors,
                 cross_attn_use_raw_embeddings=args.cross_attn_use_raw_embeddings,
-                heuristic_extractor=heuristic_extractor,
+                heuristic_extractor=train_heuristic_extractor,
                 heuristic_fusion=heuristic_fusion,
                 mplp_exact_fusion=mplp_exact_fusion,
                 semantic_aux_fusion_mode=args.semantic_aux_fusion_mode,
@@ -2155,6 +2106,7 @@ def main():
                 },
                 'rolling_smoothing': rolling_enabled,
                 'strict_no_leakage': args.strict_no_leakage,
+                'train_history_policy': TRAIN_HISTORY_POLICY,
                 'heuristic_config': {
                     'use_heuristic_features': args.use_heuristic_features,
                     'heuristic_feature_names': list(args.heuristic_feature_names),

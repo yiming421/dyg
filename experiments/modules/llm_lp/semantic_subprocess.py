@@ -70,6 +70,9 @@ class SubprocessSemanticMLPScorer:
                     }
                     if "dtgb_timestamp" in sample:
                         row["dtgb_timestamp"] = float(sample["dtgb_timestamp"])
+                    for key in ("graph_history_scope", "training_history_spec"):
+                        if key in sample:
+                            row[key] = sample[key]
                     handle.write(json.dumps(row) + "\n")
 
             cmd = [

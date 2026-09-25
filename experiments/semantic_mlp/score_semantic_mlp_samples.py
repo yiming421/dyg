@@ -12,6 +12,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from experiments.modules.semantic_mlp.backbone import SemanticMLPHybridBackbone
+from experiments.modules.llm_lp.training_protocol import sample_history_scope
 
 
 def main():
@@ -54,6 +55,7 @@ def main():
         eval_positive_batch_size=args.dtgb_eval_batch_size,
         source_init_override=args.semantic_mlp_source_init_override,
         temporal_mode=args.semantic_mlp_temporal_mode,
+        history_scope=sample_history_scope(samples),
     )
     scores = scorer.score_samples(samples)
 

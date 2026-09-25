@@ -121,6 +121,10 @@ def write_online_router_inputs(
     context_selection: str = "most_recent",
 ) -> dict[str, int | float]:
     """Write the shared router table/debug contract from live evaluator rows."""
+    from experiments.modules.llm_lp.training_protocol import sample_history_scope
+    from utils.graph_history import TRAIN_HISTORY_POLICY
+    if sample_history_scope(support_samples) != "train":
+        raise ValueError("TabICL support requires observed-training graph features")
     if not support_samples or not deployment_samples:
         raise ValueError(
             "Online TabICL routing requires nonempty support and deployment rows"
@@ -154,6 +158,7 @@ def write_online_router_inputs(
     support_route[uncertainty_order[:route_count]] = True
 
     payload: dict[str, np.ndarray] = {
+        "train_history_policy": np.asarray(TRAIN_HISTORY_POLICY),
         "route_center": np.asarray(float(route_center), dtype=np.float64),
         "validation_gnn": support["gnn"].astype(np.float64),
         # The online protocol deliberately allows these train rows to have
@@ -190,6 +195,7 @@ def write_online_router_inputs(
         for index, sample in enumerate(support_samples):
             row = {
                 "split": "train",
+                "train_history_policy": TRAIN_HISTORY_POLICY,
                 "query_id": int(sample["query_id"]),
                 "source_id": int(sample["source_id"]),
                 "target_id": int(sample["target_id"]),

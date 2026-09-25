@@ -135,21 +135,19 @@ def build_arg_parser():
         "--train_split_name",
         type=str,
         default="train",
-        choices=["train", "pretest"],
+        choices=["train"],
         help=(
             "Which timestamp window to use for PEFT training positives. "
-            "Strict training uses the canonical DTGB train interval (<= val_time). "
-            "'pretest' is available only for explicit legacy reproduction."
+            "Training uses the canonical DTGB train interval (<= val_time)."
         ),
     )
     parser.add_argument(
         "--train_data_protocol",
-        choices=["dtgb_strict", "legacy_time_only"],
+        choices=["dtgb_strict"],
         default="dtgb_strict",
         help=(
             "Default: canonical DTGB train-only positives, observed-training negative "
-            "destinations, and reserved-node-excluded training histories. "
-            "legacy_time_only reproduces the historical node-exposed sampler."
+            "destinations, and reserved-node-excluded training histories."
         ),
     )
     parser.add_argument(
@@ -619,7 +617,8 @@ def build_arg_parser():
         "--prepare_samples_only", action="store_true",
         help="Write sampled training identities and protocol audit, then exit before prompts/model loading.",
     )
-    parser.set_defaults(history_direction="both", history_protocol="both_endpoints_recent_v1",
+    parser.set_defaults(train_history_policy="observed_train_only_v1",
+                        history_direction="both", history_protocol="both_endpoints_recent_v1",
                         interaction_count_direction="source_to_target")
     return parser
 
@@ -632,13 +631,8 @@ def _validate_training_protocol_args(args):
             or (args.expert_prediction_source == "semantic_mlp"
                 and (not args.hide_expert_prediction or args.include_overall_structural_signal))):
         raise ValueError("--prepare_samples_only is model-free and requires the raw-history, no-semantic-model recipe.")
-    if args.train_data_protocol == "legacy_time_only":
-        warnings.warn(
-            "Explicit legacy_time_only reproduction: held-out nodes are not excluded "
-            "and pretest includes validation. Do not claim strict inductive training.",
-            UserWarning,
-        )
-        return
+    if args.train_data_protocol != "dtgb_strict":
+        raise ValueError("PEFT training requires dtgb_strict graph isolation")
     if args.train_split_name != "train":
         raise ValueError("dtgb_strict requires --train_split_name train; pretest includes validation.")
     expert_visible = not args.hide_expert_prediction or args.include_overall_structural_signal
@@ -658,7 +652,7 @@ def _validate_training_protocol_args(args):
             "train_data_protocol", "train_split_name", "data_seed", "dataset_name",
             "val_ratio", "test_ratio", "apply_gdelt_time_bucket", "seed",
             "train_num_samples", "negative_ratio", "edge_sampling_strategy", "model_path",
-            "history_window", "history_protocol", "interaction_count_direction",
+            "history_window", "history_protocol", "interaction_count_direction", "train_history_policy",
         )
         if any(previous.get(field) != getattr(args, field) for field in fields):
             raise ValueError("Strict resume data/base provenance differs; do not resume a legacy adapter.")

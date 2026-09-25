@@ -466,6 +466,8 @@ def finalize_test_samples(
     smooth_undirected=True,
     heuristic_recent_degree_window=30.0,
 ):
+    from experiments.modules.llm_lp.training_protocol import history_edges_for_samples
+    edges_df = history_edges_for_samples(edges_df, samples)
     if compute_rrf_scores is None:
         compute_rrf_scores = compute_expert_prediction
 

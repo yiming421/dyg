@@ -30,6 +30,9 @@ from experiments.modules.llm_lp.sample_finalize import (
     finalize_test_samples,
 )
 from utils.utils import NegativeEdgeSampler
+from experiments.modules.llm_lp.training_protocol import (
+    resolve_training_protocol, protocol_history_edges, tag_training_history,
+)
 
 
 def _precompute_negative_targets(
@@ -555,27 +558,19 @@ def create_test_samples(
     edge_dst = edges_df["i"].values.astype(np.int64)
     edge_ts = edge_ts_for_split
 
+    training_protocol = None
     if eval_split == "train":
-        split_random = random.Random(2020)
-        node_set = set(edge_src).union(set(edge_dst))
-        test_node_set = set(edge_src[edge_ts > val_time]).union(
-            set(edge_dst[edge_ts > val_time])
+        training_protocol = resolve_training_protocol(
+            edges_df, split_name="train", val_ratio=val_ratio, test_ratio=test_ratio,
+            apply_gdelt_time_bucket=apply_gdelt_time_bucket,
         )
-        held_out_nodes = set(
-            split_random.sample(list(test_node_set), int(0.1 * len(node_set)))
-        )
-        observed_edges_mask = ~(
-            np.isin(edge_src, np.fromiter(held_out_nodes, dtype=np.int64))
-            | np.isin(edge_dst, np.fromiter(held_out_nodes, dtype=np.int64))
-        )
-        test_mask = np.logical_and(edge_ts <= val_time, observed_edges_mask)
+        test_mask = training_protocol.positive_mask
         test_edges = edges_df[test_mask].copy()
-        test_edges["_dtgb_eval_ts"] = edge_ts_for_split[test_mask]
-        negative_dst_pool = np.unique(edge_dst[test_mask]).astype(np.int64)
-        print(
-            f"\nTrain set: {len(test_edges)} edges "
-            f"(held-out inductive nodes excluded={len(held_out_nodes)})"
-        )
+        test_edges["_dtgb_eval_ts"] = training_protocol.split_times[test_mask]
+        negative_dst_pool = training_protocol.negative_dst_pool
+        # All subsequent graph statistics and history indexes use the observed
+        # training graph; split boundaries above remain those of the full graph.
+        edges_df = protocol_history_edges(edges_df, training_protocol)
     elif eval_split == "transductive":
         test_mask = edge_ts > test_time
         test_edges = edges_df[test_mask].copy()
@@ -720,7 +715,8 @@ def create_test_samples(
             "building lightweight full-split samples before hybrid selection."
         )
 
-        num_nodes = len(entity_map)
+        num_nodes = (len(training_protocol.observed_train_node_ids)
+                     if training_protocol is not None else len(entity_map))
         num_edges = len(edges_df)
         total_pairs = (num_nodes * (num_nodes - 1)) / 2
         global_avg_interactions = num_edges / total_pairs if total_pairs > 0 else 0
@@ -816,6 +812,8 @@ def create_test_samples(
                 output_path=sample_creation_profile_output,
             )
 
+        if training_protocol is not None:
+            tag_training_history(samples, training_protocol)
         materialize_samples_prompt_context(
             samples,
             edges_df=edges_df,
@@ -858,6 +856,8 @@ def create_test_samples(
 
         if defer_postprocessing:
             print("Deferring RRF/key-signal postprocessing to a later phase.")
+            if training_protocol is not None:
+                tag_training_history(samples, training_protocol)
             return samples
 
         deferred_contextual_key_signals = (
@@ -865,6 +865,8 @@ def create_test_samples(
         )
         if deferred_contextual_key_signals:
             print("Deferring prompt-side contextual key-signal calibration to selected-slice enrichment.")
+        if training_protocol is not None:
+            tag_training_history(samples, training_protocol)
         finalize_test_samples(
             samples=samples,
             edges_df=edges_df,
@@ -892,6 +894,8 @@ def create_test_samples(
             skip_key_signal_calibration=skip_key_signal_calibration,
         )
 
+        if training_protocol is not None:
+            tag_training_history(samples, training_protocol)
         return samples
 
     need_event_histories = build_prompt_features
@@ -932,7 +936,8 @@ def create_test_samples(
         mapped_i_vals = np.array([entity_id_to_idx.get(int(i), -1) for i in i_vals], dtype=np.int64)
         print("Semantic-ranking smoothing backend prepared (dynamic per-query timestamp).")
 
-    num_nodes = len(entity_map)
+    num_nodes = (len(training_protocol.observed_train_node_ids)
+                     if training_protocol is not None else len(entity_map))
     num_edges = len(edges_df)
     total_pairs = (num_nodes * (num_nodes - 1)) / 2
     global_avg_interactions = num_edges / total_pairs if total_pairs > 0 else 0
@@ -1707,8 +1712,12 @@ def create_test_samples(
 
     if defer_postprocessing:
         print("Deferring RRF/key-signal postprocessing to a later phase.", flush=True)
+        if training_protocol is not None:
+            tag_training_history(samples, training_protocol)
         return samples
 
+    if training_protocol is not None:
+        tag_training_history(samples, training_protocol)
     finalize_test_samples(
         samples=samples,
         edges_df=edges_df,
@@ -1751,6 +1760,8 @@ def create_test_samples(
         heuristic_recent_degree_window=heuristic_recent_degree_window,
     )
 
+    if training_protocol is not None:
+        tag_training_history(samples, training_protocol)
     return samples
 
 

@@ -546,6 +546,7 @@ def _build_prediction_debug_fields(sample, llm_score, parse_method=None):
 
     return {
         "llm_prediction_confidence": float(llm_score),
+        "train_history_policy": sample.get("train_history_policy"),
         "llm_prediction_label": int(llm_score > 0.5),
         "llm_parse_method": parse_method,
         # Pre-LLM numeric fields used by lightweight routing experiments.  Keep
@@ -614,6 +615,7 @@ def write_prediction_debug_log(path, detailed_results, trial_idx, eval_split):
 
     written = 0
     keep_keys = [
+        "train_history_policy",
         "sample_id",
         "query_id",
         "source_id",

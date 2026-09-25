@@ -421,26 +421,28 @@ def smooth_embeddings_by_time_window_torch(embeddings,
     hetero_vals = base_vals[hetero_mask]
 
     graph_num_nodes = num_nodes
-    supernode_active = supernode_strength > 0.0
+    # A virtual node may aggregate only nodes observed in this history window.
+    # The embedding table can also contain held-out or not-yet-observed nodes.
+    supernode_active = supernode_strength > 0.0 and src.numel() > 0
     emb_for_prop = emb
 
     if supernode_active:
         graph_num_nodes = num_nodes + 1
         supernode_id = num_nodes
-        all_nodes = torch.arange(num_nodes, dtype=torch.long, device=homo_src.device)
-        super_ids = torch.full((num_nodes,), supernode_id, dtype=torch.long, device=homo_src.device)
+        all_nodes = torch.unique(torch.cat([src, dst]))
+        super_ids = torch.full_like(all_nodes, supernode_id)
 
         homo_src = torch.cat([homo_src, all_nodes, super_ids])
         homo_dst = torch.cat([homo_dst, super_ids, all_nodes])
         super_vals = torch.full(
-            (2 * num_nodes,),
+            (2 * all_nodes.numel(),),
             float(supernode_strength),
             dtype=torch.float32,
             device=homo_vals.device,
         )
         homo_vals = torch.cat([homo_vals, super_vals])
 
-        super_emb = emb.mean(dim=0, keepdim=True)
+        super_emb = emb[all_nodes].mean(dim=0, keepdim=True)
         emb_for_prop = torch.cat([emb, super_emb], dim=0)
 
     def build_sparse_adj(chan_src, chan_dst, chan_vals):

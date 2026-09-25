@@ -289,7 +289,7 @@ def _select_positive_edges(
     val_ratio: float,
     test_ratio: float,
     apply_gdelt_time_bucket: bool,
-    train_data_protocol: str = "legacy_time_only",
+    train_data_protocol: str = "dtgb_strict",
     data_seed: int = 2020,
 ):
     protocol = resolve_training_protocol(
@@ -361,7 +361,7 @@ def create_direct_peft_samples(
     return_selection_stats: bool = False,
     defer_prompt_context_materialization: bool = False,
     heuristic_recent_degree_window: float = 30.0,
-    train_data_protocol: str = "legacy_time_only",
+    train_data_protocol: str = "dtgb_strict",
     data_seed: int = 2020,
 ):
     if compute_rrf_scores is None:
@@ -488,6 +488,8 @@ def create_direct_peft_samples(
             return samples, selection_stats
         return samples
 
+    from experiments.modules.llm_lp.training_protocol import tag_training_history
+    tag_training_history(samples, protocol)
     # Fail closed before any prompt construction, then recheck materialized evidence.
     validate_protocol_samples(samples, protocol)
     if not defer_prompt_context_materialization:

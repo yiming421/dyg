@@ -393,6 +393,8 @@ def main() -> None:
     start = time.perf_counter()
     with np.load(args.table, allow_pickle=False) as loaded:
         payload = {key: loaded[key] for key in loaded.files}
+    from utils.graph_history import require_training_history_table
+    require_training_history_table(payload)
     calibration_split = args.calibration_split
     deployment_split = args.deployment_split
     require_router_table_schema(

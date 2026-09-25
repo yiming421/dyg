@@ -37,6 +37,8 @@ from experiments.modules.semantic_mlp.models import (
     TemporalNeighborIndex,
     TemporalSelfAttentionPooling,
     build_lookup_tensor,
+    maybe_filter_train_edges,
+    make_subset,
 )
 from experiments.modules.semantic_mlp.ridge import (
     FixedRandomProjection,
@@ -51,6 +53,8 @@ from experiments.modules.semantic_mlp.graph_components import (
 )
 from utils.DataLoader import get_link_prediction_data
 from utils.utils import get_neighbor_sampler
+from utils.graph_history import TRAIN_HISTORY_POLICY, graph_history
+from experiments.modules.llm_lp.training_protocol import sample_history_scope
 
 
 class SemanticMLPHybridBackbone:
@@ -173,12 +177,17 @@ class SemanticMLPHybridBackbone:
         eval_positive_batch_size=None,
         source_init_override="auto",
         temporal_mode="rolling_replay",
+        history_scope="evaluation",
     ):
+        if history_scope not in {"train", "evaluation"}:
+            raise ValueError("Unknown graph history scope")
         if embeddings is None:
             raise ValueError("Semantic hybrid backbone requires preloaded embeddings.")
 
         device_obj = torch.device(device)
         ckpt = torch.load(checkpoint_path, map_location=device_obj)
+        if history_scope == "train" and ckpt.get("train_history_policy") != TRAIN_HISTORY_POLICY:
+            raise ValueError("Training-context scoring requires an observed_train_only_v1 checkpoint")
 
         checkpoint_dataset_name = ckpt.get("dataset_name")
         if checkpoint_dataset_name and str(checkpoint_dataset_name) != str(dataset_name):
@@ -468,12 +477,27 @@ class SemanticMLPHybridBackbone:
             use_feature = "None"
             model_name = "SemanticMLP"
 
-        _, _, full_data, _, _, test_data, _, _, _ = get_link_prediction_data(
+        _, _, full_data, train_data, _, test_data, _, _, _ = get_link_prediction_data(
             dataset_name=dataset_name,
             val_ratio=float(val_ratio),
             test_ratio=float(test_ratio),
             args=DataArgs(),
         )
+
+        max_node_id = int(max(full_data.src_node_ids.max(), full_data.dst_node_ids.max()))
+        train_data, _, _ = maybe_filter_train_edges(
+            train_data=train_data,
+            cutoff_time=ckpt.get("train_edge_cutoff_time"),
+            cutoff_ratio=float(ckpt.get("train_edge_cutoff_ratio", 1.0)),
+        )
+        holdout = int(ckpt.get("train_holdout_recent_edges") or 0)
+        if holdout:
+            if holdout >= len(train_data.src_node_ids):
+                raise ValueError("Checkpoint holdout removes the entire training graph")
+            keep = np.arange(len(train_data.src_node_ids)) < len(train_data.src_node_ids) - holdout
+            train_data = make_subset(train_data, keep)
+        if history_scope == "train":
+            full_data = train_data
 
         full_src = np.asarray(full_data.src_node_ids, dtype=np.int64)
         full_dst = np.asarray(full_data.dst_node_ids, dtype=np.int64)
@@ -491,8 +515,15 @@ class SemanticMLPHybridBackbone:
         static_src = full_src[static_mask]
         static_dst = full_dst[static_mask]
         static_times = full_times[static_mask]
+        if not rolling_smoothing and ckpt.get("train_history_policy") == TRAIN_HISTORY_POLICY:
+            static_times = np.asarray(train_data.node_interact_times, dtype=np.float64)
+            static_keep = np.ones(len(static_times), dtype=bool)
+            if smooth_cutoff_time is not None:
+                static_keep &= static_times < float(smooth_cutoff_time)
+            static_src = np.asarray(train_data.src_node_ids)[static_keep]
+            static_dst = np.asarray(train_data.dst_node_ids)[static_keep]
+            static_times = static_times[static_keep]
 
-        max_node_id = int(max(np.max(full_src), np.max(full_dst)))
         lookup = build_lookup_tensor(entity_ids_sorted, max_node_id, device_obj)
 
         if resolved_source_init == "history_mean" and not rolling_smoothing:
@@ -523,12 +554,13 @@ class SemanticMLPHybridBackbone:
                     f"checkpoint input_dim={input_dim}, projected={int(base_embeddings.shape[1])}."
                 )
 
+        temporal_history = graph_history(full_data, smooth_cutoff_time)
         cross_attn_neighbor_index = None
         if str(model_config.get("scorer_type", "mlp")) in {"cross_attention", "dygformer_lite", "ncn", "seqfilter"}:
             cross_attn_neighbor_index = TemporalNeighborIndex(
-                src_node_ids=static_src,
-                dst_node_ids=static_dst,
-                node_interact_times=static_times,
+                src_node_ids=temporal_history.src_node_ids,
+                dst_node_ids=temporal_history.dst_node_ids,
+                node_interact_times=temporal_history.node_interact_times,
                 max_node_id=max_node_id,
                 undirected=bool(model_config.get("cross_attn_undirected_history", True)),
             )
@@ -538,9 +570,9 @@ class SemanticMLPHybridBackbone:
             gcn_config.get("learnable_mp_type", "gcn")
         ) == "attn_pool":
             mp_neighbor_index = TemporalNeighborIndex(
-                src_node_ids=static_src,
-                dst_node_ids=static_dst,
-                node_interact_times=static_times,
+                src_node_ids=temporal_history.src_node_ids,
+                dst_node_ids=temporal_history.dst_node_ids,
+                node_interact_times=temporal_history.node_interact_times,
                 max_node_id=max_node_id,
                 undirected=bool(gcn_config.get("gcn_undirected", True)),
             )
@@ -726,7 +758,7 @@ class SemanticMLPHybridBackbone:
                 )
                 static_embeddings = F.normalize(static_embeddings.float(), dim=1)
 
-        return cls(
+        result = cls(
             dataset_name=dataset_name,
             checkpoint_path=checkpoint_path,
             eval_positive_batch_size=eval_positive_batch_size,
@@ -757,6 +789,33 @@ class SemanticMLPHybridBackbone:
             rolling_smoothing=rolling_smoothing,
             temporal_mode=temporal_mode,
         )
+        result.history_scope = history_scope
+        result._training_view = None
+        result._reload_kwargs = dict(
+            dataset_name=dataset_name, checkpoint_path=checkpoint_path,
+            embeddings=embeddings, entity_ids_sorted=entity_ids_sorted, device=device,
+            val_ratio=val_ratio, test_ratio=test_ratio,
+            backbone_ablate_recency=backbone_ablate_recency,
+            eval_positive_batch_size=eval_positive_batch_size,
+            source_init_override=source_init_override, temporal_mode=temporal_mode,
+        )
+        return result
+
+    def _scorer_for_samples(self, samples):
+        scope = sample_history_scope(samples)
+        if scope == "train":
+            spec = samples[0].get("training_history_spec", {})
+            if (spec.get("data_seed") != 2020
+                    or spec.get("val_ratio") != self._reload_kwargs["val_ratio"]
+                    or spec.get("test_ratio") != self._reload_kwargs["test_ratio"]):
+                raise ValueError("Training samples and GNN use different reserved-node splits")
+        if scope == "train" and self.history_scope != "train":
+            if self._training_view is None:
+                self._training_view = type(self).from_checkpoint(**self._reload_kwargs, history_scope="train")
+            return self._training_view
+        if scope != self.history_scope:
+            raise ValueError("Evaluation samples cannot use a training-only scorer")
+        return self
 
     def _dynamic_source_embeddings(self, query_time):
         if self.smoothing_config.get("source_init_effective", "raw") != "history_mean":
@@ -1860,6 +1919,9 @@ class SemanticMLPHybridBackbone:
     def score_samples(self, samples):
         if not samples:
             return np.empty((0,), dtype=np.float64)
+        scorer = self._scorer_for_samples(samples)
+        if scorer is not self:
+            return scorer.score_samples(samples)
 
         print(
             "[SemanticBackbone] score_samples start: "
@@ -1902,6 +1964,10 @@ class SemanticMLPHybridBackbone:
 
     def score_samples_with_pair_features(self, samples):
         """Return final checkpoint logits and the aligned pre-head graph pair vectors."""
+        if samples:
+            scorer = self._scorer_for_samples(samples)
+            if scorer is not self:
+                return scorer.score_samples_with_pair_features(samples)
         if not samples:
             if not isinstance(self.model, SemanticMLP):
                 raise TypeError("Pair-representation extraction requires a SemanticMLP checkpoint.")
